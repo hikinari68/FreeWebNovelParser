@@ -24,9 +24,7 @@ DEFAULT_OUTPUT = "novel.epub"
 HEADERS = {
     'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
     'accept-language': 'en-US,en;q=0.9,ru;q=0.8',
-    'accept-encoding': 'gzip, deflate, br, zstd',
     'cache-control': 'max-age=0',
-    'cookie': 'ga=GA1.1.1502851789.1752997942; articlevisited=1; first_view_time=1753029999; Fruit=1; breaks=1; lineHeightSelect=160%25; fontSizeSelect=28; night_on=true; BackgroundSelect=%23EAE4D3; article_history=1991%2C475%239663%2C2%23810%2C18; cf_clearance=sorZaNiOse5z1Lbu2lkjT_1SbN76G2HK1hIZV4oSenw-1753098516-1.2.1.1-42hNmfr3WekmVvtUnhILLDag1RjpJI4yfiZhUACE67SZAGmFJhWKk1bbRiTH1YzhLCceZAVD_qvOHb1VuD8KZK96TaCwGIpQYl7X4vRsbfXdWFSGYOtoDKFxZxM3BAgjCPQIEhBc4TGlT.56aaVh.xFvt.Uc28WkDz.3MLJ.YDnZmOALPq95M6cEWeNfqJ4u7X4U.QyCNgAxNHVk51.2Kr_YvOKxNy52lzqMEfrrfLc; _ga_1Z2JMDX1K4=GS2.1.s1753096819$o6$g1$t1753098516$j60$l0$h0',
     'priority': 'u=0, i',
     'sec-cha-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
     'sec-cha-ua-platform': '"macOS"',
@@ -312,7 +310,9 @@ class NovelDownloader:
             soup = BeautifulSoup(response.text, 'html.parser')
             content_div = soup.find('div', class_='txt')
 
-            if not content_div:
+            if (not content_div
+                or soup.find('div', id='article').text ==
+                "Chapter content is missing or does not exist! Please try again later!"):
                 logger.info(f"[WARN] No content found in chapter {chapter_num}")
                 return None
 
