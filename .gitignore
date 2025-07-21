@@ -5,4 +5,4 @@ out
 gen
 
 # Books
-*.epub
+*.epub*
