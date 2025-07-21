@@ -18,7 +18,7 @@ SAVE_INTERVAL = 5
 DEFAULT_NOVEL = "shadow-slave"
 DEFAULT_START_CHAPTER = 1
 DEFAULT_MAX_CHAPTERS = 0
-DEFAULT_DELAY_SEC = 1.5
+DEFAULT_DELAY_SEC = 1
 DEFAULT_OUTPUT = "novel.epub"
 
 HEADERS = {
@@ -172,7 +172,9 @@ class NovelDownloader:
         url = f"{BASE_URL}/novel/{self.novel_name}"
         try:
             response = self.safe_request(url, timeout=15)
-            response.raise_for_status()
+            if response is None:
+                return None
+
             soup = BeautifulSoup(response.text, 'html.parser')
 
             SELECTORS = {
@@ -241,9 +243,9 @@ class NovelDownloader:
         """Добавляет обложку в EPUB."""
         try:
             response = self.safe_request(cover_url, timeout=10)
-            response.raise_for_status()
+            if response is None:
+                return
 
-            # REFACTOR: Безопасное определение типа изображения
             content_type = response.headers.get('Content-Type', '')
             if not content_type.startswith('image/'):
                 logger.info(f"[WARN] Invalid cover content type: {content_type}")
@@ -303,8 +305,9 @@ class NovelDownloader:
             # Устанавливаем Referer для последовательности глав
             headers = {'Referer': f"{BASE_URL}/novel/{self.novel_name}/chapter-{chapter_num-1}"} if chapter_num > 1 else {}
 
-            response = self.safe_request(url, headers=headers, timeout=30, initial_delay=5)
-            response.raise_for_status()
+            response = self.safe_request(url, headers=headers, timeout=30, initial_delay=10, max_retries=10)
+            if response is None:
+                return None
 
             soup = BeautifulSoup(response.text, 'html.parser')
             content_div = soup.find('div', class_='txt')
