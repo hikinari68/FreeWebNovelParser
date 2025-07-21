@@ -22,15 +22,24 @@ DEFAULT_DELAY_SEC = 1.5
 DEFAULT_OUTPUT = "novel.epub"
 
 HEADERS = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'accept-language': 'en-US,en;q=0.9',
-    'cache-control': 'no-cache',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+    'accept-language': 'en-US,en;q=0.9,ru;q=0.8',
+    'accept-encoding': 'gzip, deflate, br, zstd',
+    'cache-control': 'max-age=0',
+    'cookie': 'ga=GA1.1.1502851789.1752997942; articlevisited=1; first_view_time=1753029999; Fruit=1; breaks=1; lineHeightSelect=160%25; fontSizeSelect=28; night_on=true; BackgroundSelect=%23EAE4D3; article_history=1991%2C475%239663%2C2%23810%2C18; cf_clearance=sorZaNiOse5z1Lbu2lkjT_1SbN76G2HK1hIZV4oSenw-1753098516-1.2.1.1-42hNmfr3WekmVvtUnhILLDag1RjpJI4yfiZhUACE67SZAGmFJhWKk1bbRiTH1YzhLCceZAVD_qvOHb1VuD8KZK96TaCwGIpQYl7X4vRsbfXdWFSGYOtoDKFxZxM3BAgjCPQIEhBc4TGlT.56aaVh.xFvt.Uc28WkDz.3MLJ.YDnZmOALPq95M6cEWeNfqJ4u7X4U.QyCNgAxNHVk51.2Kr_YvOKxNy52lzqMEfrrfLc; _ga_1Z2JMDX1K4=GS2.1.s1753096819$o6$g1$t1753098516$j60$l0$h0',
+    'priority': 'u=0, i',
+    'sec-cha-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
+    'sec-cha-ua-platform': '"macOS"',
+    'sec-cha-ua-mobile': '?0',
+    'sec-fetch-user': '?1',
+    'upgrade-Insecure-Requests': '1',
     'dnt': '1'
 }
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
+
 
 class NovelDownloader:
     """Скачивает новеллу с webnovel.com и конвертирует в EPUB."""
@@ -97,12 +106,12 @@ class NovelDownloader:
         """
         attempt = 0
         current_delay = initial_delay
-    
+
         # Используем заголовки сессии по умолчанию
         request_headers = self.session.headers.copy()
         if headers:
             request_headers.update(headers)
-    
+
         while attempt <= max_retries:
             attempt += 1
             try:
@@ -113,51 +122,49 @@ class NovelDownloader:
                     params=params,
                     timeout=timeout
                 )
-    
+
                 # Проверяем статус код
                 if response.status_code == 200:
                     return response
-    
+
                 # Обработка специфичных ошибок
                 if response.status_code == 404:
-                    logger.info(f"Ресурс не найден: {url}")
-                    return None
-    
+                    logger.info(f"Resource({url}) not found: {response.reason}")
+                    return response
+
                 if response.status_code == 403:
-                    logger.info(f"Доступ запрещен: {url}")
-                    if attempt == 1:
-                        logger.info("Попробуйте обновить куки в настройках")
-    
+                    logger.info(f"Access forbidden: {url}")
+
                 if response.status_code in (429, 503):
-                    logger.info(f"Слишком много запросов (статус {response.status_code})")
-    
+                    logger.info(f"Too many requests (status code {response.status_code})")
+
                 if 400 <= response.status_code < 500:
-                    logger.info(f"Ошибка клиента ({response.status_code}): {url}")
-    
+                    logger.info(f"Client error ({response.status_code}): {url}")
+
                 if 500 <= response.status_code < 600:
-                    logger.info(f"Ошибка сервера ({response.status_code}): {url}")
-    
+                    logger.info(f"Server error ({response.status_code}): {url}")
+
             except requests.exceptions.RequestException as e:
-                error_name = type(e).__name__
-    
+                error = f"{type(e).__name__} {e}"
+
                 if isinstance(e, requests.exceptions.Timeout):
-                    logger.info(f"Таймаут запроса: {url}")
+                    logger.info(f"Request timeout ({error}): {url}")
                 elif isinstance(e, requests.exceptions.ConnectionError):
-                    logger.info(f"Сетевая ошибка: {url}")
+                    logger.info(f"Network error ({error}): {url}")
                 else:
-                    logger.info(f"Ошибка запроса ({error_name}): {url}")
-    
+                    logger.info(f"Request error ({error}): {url}")
+
             if attempt < max_retries:
                 jitter = 0.1 * current_delay * random.random()
                 sleep_time = current_delay + jitter
-    
-                logger.info(f"Повтор через {sleep_time:.1f} сек (попытка {attempt}/{max_retries})")
+
+                logger.info(f"Retry in {sleep_time:.1f} sec (attempt {attempt}/{max_retries})")
                 time.sleep(sleep_time)
-    
+
                 current_delay *= backoff_factor
             else:
-                logger.info(f"Превышено максимальное количество попыток ({max_retries}) для {url}")
-    
+                logger.info(f"Maximum number of attempts exceeded ({max_retries}) for {url}")
+
         return None
 
     def fetch_metadata(self) -> Optional[Dict[str, Union[str, List[str]]]]:
@@ -168,7 +175,6 @@ class NovelDownloader:
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # REFACTOR: Вынесение сложных селекторов в константы
             SELECTORS = {
                 'title': '.m-info .m-desc h1.tit',
                 'author': '.m-info .txt .item:has(span[title="Author"]) .right a',
@@ -308,7 +314,8 @@ class NovelDownloader:
                 return None
 
             content = self._process_chapter_content(content_div)
-            title_tag = content.find('h4')
+
+            title_tag = soup.find('span', class_='chapter')
             if title_tag:
                 title = title_tag.text.strip()
                 title_tag.decompose()
@@ -431,6 +438,7 @@ class NovelDownloader:
                 logger.info("A temporary file with progress has been saved.:")
                 logger.info(f"  {os.path.abspath(self.temp_file)}")
 
+
 def main():
     """Точка входа с обработкой аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -458,6 +466,7 @@ def main():
         request_delay=args.delay
     )
     downloader.run()
+
 
 if __name__ == "__main__":
     main()
