@@ -1,6 +1,9 @@
 import argparse
+import logging
 import mimetypes
 import os
+import random
+import signal
 import time
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
@@ -11,6 +14,7 @@ from ebooklib import epub
 
 # Константы
 BASE_URL = "https://freewebnovel.com"
+SAVE_INTERVAL = 5
 DEFAULT_NOVEL = "shadow-slave"
 DEFAULT_START_CHAPTER = 1
 DEFAULT_MAX_CHAPTERS = 0
@@ -24,6 +28,10 @@ HEADERS = {
     'dnt': '1'
 }
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
+
 class NovelDownloader:
     """Скачивает новеллу с webnovel.com и конвертирует в EPUB."""
 
@@ -35,20 +43,128 @@ class NovelDownloader:
             output_file: str = DEFAULT_OUTPUT,
             request_delay: float = DEFAULT_DELAY_SEC
     ):
+        if output_file == DEFAULT_OUTPUT:
+            self.output_file = f"{novel_name}.epub"
+        else:
+            self.output_file = output_file
+        self.temp_file = f"{self.output_file}.tmp"
+
         self.novel_name = novel_name
         self.start_chapter = start_chapter
         self.max_chapters = max_chapters
-        self.output_file = output_file
         self.request_delay = request_delay
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
         self.metadata = {}
+        self.should_stop = False
+        self._register_signal_handlers()
+
+    def _register_signal_handlers(self):
+        """Регистрирует обработчики сигналов для корректного завершения."""
+        signal.signal(signal.SIGINT, self._handle_exit_signal)
+        signal.signal(signal.SIGTERM, self._handle_exit_signal)
+
+    def _handle_exit_signal(self, signum, frame):
+        """Обрабатывает сигналы завершения программы."""
+        logger.info(f"\nSignal {signum} received, work completed...")
+        self.should_stop = True
+
+    def safe_request(
+            self,
+            url: str,
+            method: str = "GET",
+            headers: Optional[dict] = None,
+            params: Optional[dict] = None,
+            max_retries: int = 5,
+            initial_delay: float = 3.0,
+            backoff_factor: float = 2.0,
+            timeout: float = 30.0
+    ) -> Optional[requests.Response]:
+        """
+        Выполняет HTTP-запрос с повторными попытками при сбоях.
+        
+        Параметры:
+        - url: URL для запроса
+        - method: HTTP метод (GET/POST)
+        - headers: дополнительные заголовки
+        - params: параметры запроса
+        - max_retries: максимальное количество попыток
+        - initial_delay: начальная задержка (сек)
+        - backoff_factor: множитель экспоненциальной задержки
+        - timeout: таймаут запроса
+        
+        Возвращает: Response объект или None при ошибке
+        """
+        attempt = 0
+        current_delay = initial_delay
+    
+        # Используем заголовки сессии по умолчанию
+        request_headers = self.session.headers.copy()
+        if headers:
+            request_headers.update(headers)
+    
+        while attempt <= max_retries:
+            attempt += 1
+            try:
+                response = self.session.request(
+                    method,
+                    url,
+                    headers=request_headers,
+                    params=params,
+                    timeout=timeout
+                )
+    
+                # Проверяем статус код
+                if response.status_code == 200:
+                    return response
+    
+                # Обработка специфичных ошибок
+                if response.status_code == 404:
+                    logger.info(f"Ресурс не найден: {url}")
+                    return None
+    
+                if response.status_code == 403:
+                    logger.info(f"Доступ запрещен: {url}")
+                    if attempt == 1:
+                        logger.info("Попробуйте обновить куки в настройках")
+    
+                if response.status_code in (429, 503):
+                    logger.info(f"Слишком много запросов (статус {response.status_code})")
+    
+                if 400 <= response.status_code < 500:
+                    logger.info(f"Ошибка клиента ({response.status_code}): {url}")
+    
+                if 500 <= response.status_code < 600:
+                    logger.info(f"Ошибка сервера ({response.status_code}): {url}")
+    
+            except requests.exceptions.RequestException as e:
+                error_name = type(e).__name__
+    
+                if isinstance(e, requests.exceptions.Timeout):
+                    logger.info(f"Таймаут запроса: {url}")
+                elif isinstance(e, requests.exceptions.ConnectionError):
+                    logger.info(f"Сетевая ошибка: {url}")
+                else:
+                    logger.info(f"Ошибка запроса ({error_name}): {url}")
+    
+            if attempt < max_retries:
+                jitter = 0.1 * current_delay * random.random()
+                sleep_time = current_delay + jitter
+    
+                logger.info(f"Повтор через {sleep_time:.1f} сек (попытка {attempt}/{max_retries})")
+                time.sleep(sleep_time)
+    
+                current_delay *= backoff_factor
+            else:
+                logger.info(f"Превышено максимальное количество попыток ({max_retries}) для {url}")
+    
+        return None
 
     def fetch_metadata(self) -> Optional[Dict[str, Union[str, List[str]]]]:
         """Получает метаданные книги со страницы обзора."""
         url = f"{BASE_URL}/novel/{self.novel_name}"
         try:
-            response = self.session.get(url, timeout=15)
+            response = self.safe_request(url, timeout=15)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -58,7 +174,7 @@ class NovelDownloader:
                 'author': '.m-info .txt .item:has(span[title="Author"]) .right a',
                 'genres': '.m-info .txt .item:has(span[title="Genre"]) .right a',
                 'status': '.m-info .txt .item:has(span[title="Status"]) .right',
-                'description': '.m-info + .inner p',
+                'description': '.m-info .inner p',
                 'cover': '.m-info .m-book1 .pic img'
             }
 
@@ -77,7 +193,7 @@ class NovelDownloader:
             return self.metadata
 
         except (requests.RequestException, ValueError) as e:
-            print(f"[ERROR] Metadata fetch failed: {type(e).__name__} - {str(e)}")
+            logger.info(f"[ERROR] Metadata fetch failed: {type(e).__name__} - {str(e)}")
             return None
 
     def _get_text(self, soup: BeautifulSoup, selector: str) -> Optional[str]:
@@ -118,19 +234,19 @@ class NovelDownloader:
     def _add_cover(self, book: epub.EpubBook, cover_url: str) -> None:
         """Добавляет обложку в EPUB."""
         try:
-            response = self.session.get(cover_url, timeout=10)
+            response = self.safe_request(cover_url, timeout=10)
             response.raise_for_status()
 
             # REFACTOR: Безопасное определение типа изображения
             content_type = response.headers.get('Content-Type', '')
             if not content_type.startswith('image/'):
-                print(f"[WARN] Invalid cover content type: {content_type}")
+                logger.info(f"[WARN] Invalid cover content type: {content_type}")
                 return
 
             ext = mimetypes.guess_extension(content_type) or '.jpg'
             book.set_cover(f"cover{ext}", response.content)
         except Exception as e:
-            print(f"[ERROR] Cover download failed: {type(e).__name__} - {str(e)}")
+            logger.info(f"[ERROR] Cover download failed: {type(e).__name__} - {str(e)}")
 
     def _create_description_page(self) -> epub.EpubHtml:
         """Генерирует HTML-страницу с описанием книги."""
@@ -140,7 +256,6 @@ class NovelDownloader:
             lang='en'
         )
 
-        # REFACTOR: Шаблон для избежания XSS
         title = self.metadata.get('title', '')
         author = self.metadata.get('author', 'Unknown')
         status = self.metadata.get('status', 'Unknown')
@@ -182,18 +297,23 @@ class NovelDownloader:
             # Устанавливаем Referer для последовательности глав
             headers = {'Referer': f"{BASE_URL}/novel/{self.novel_name}/chapter-{chapter_num-1}"} if chapter_num > 1 else {}
 
-            response = self.session.get(url, headers=headers, timeout=30)
+            response = self.safe_request(url, headers=headers, timeout=30, initial_delay=5)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
             content_div = soup.find('div', class_='txt')
 
             if not content_div:
-                print(f"[WARN] No content found in chapter {chapter_num}")
+                logger.info(f"[WARN] No content found in chapter {chapter_num}")
                 return None
 
             content = self._process_chapter_content(content_div)
-            title = content.find('h4').text.strip() if content.find('h4') else f"Chapter {chapter_num}"
+            title_tag = content.find('h4')
+            if title_tag:
+                title = title_tag.text.strip()
+                title_tag.decompose()
+            else:
+                title = f"Chapter {chapter_num}"
 
             return {
                 'title': title,
@@ -202,7 +322,7 @@ class NovelDownloader:
             }
 
         except requests.RequestException as e:
-            print(f"[ERROR] Chapter {chapter_num} download failed: {type(e).__name__} - {str(e)}")
+            logger.info(f"[ERROR] Chapter {chapter_num} download failed: {type(e).__name__} - {str(e)}")
             return None
 
     def generate_epub_chapter(self, chapter_data: Dict[str, str]) -> epub.EpubHtml:
@@ -223,14 +343,42 @@ class NovelDownloader:
                 """
         return chapter
 
+    def save_progress(self, book: epub.EpubBook) -> bool:
+        """Сохраняет текущий прогресс во временный файл."""
+        try:
+            epub.write_epub(self.temp_file, book, {})
+            return True
+        except Exception as e:
+            logger.info(f"[ERROR] Progress saving error: {type(e).__name__} - {str(e)}")
+            return False
+
+    def finalize_epub(self, book: epub.EpubBook) -> bool:
+        """Финализирует EPUB и переименовывает временный файл."""
+        try:
+            # Добавляем навигацию
+            book.add_item(epub.EpubNcx())
+            book.add_item(epub.EpubNav())
+
+            epub.write_epub(self.temp_file, book, {})
+
+            # Заменяем временный файл постоянным
+            if os.path.exists(self.output_file):
+                os.remove(self.output_file)
+            os.rename(self.temp_file, self.output_file)
+
+            return True
+        except Exception as e:
+            logger.info(f"[ERROR] EPUB finalizing error: {type(e).__name__} - {str(e)}")
+            return False
+
     def run(self) -> None:
         """Основной рабочий процесс."""
-        print(f"Starting download: {self.novel_name}")
+        logger.info(f"Starting download: {self.novel_name}")
         start_time = time.time()
 
         # Получение метаданных
         if not self.fetch_metadata():
-            print("Aborting: Failed to fetch metadata")
+            logger.info("Aborting: Failed to fetch metadata")
             return
 
         # Создание EPUB
@@ -247,39 +395,41 @@ class NovelDownloader:
         # Загрузка глав
         chapter_count = 0
         current_chapter = self.start_chapter
-        success_count = 0
-
-        while (self.max_chapters == 0 or chapter_count < self.max_chapters):
-            chapter_data = self.download_chapter(current_chapter)
-            if not chapter_data:
-                print(f"Stopping at chapter {current_chapter}")
-                break
-
-            epub_chapter = self.generate_epub_chapter(chapter_data)
-            book.add_item(epub_chapter)
-            book.toc.append(epub_chapter)
-            book.spine.append(epub_chapter)
-
-            chapter_count += 1
-            success_count += 1
-            current_chapter += 1
-            time.sleep(self.request_delay)
-
-            # Промежуточный статус каждые 10 глав
-            if chapter_count % 10 == 0:
-                print(f"Downloaded {chapter_count} chapters...")
-
-        # Финализация EPUB
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
 
         try:
-            epub.write_epub(self.output_file, book, {})
-            elapsed = time.time() - start_time
-            print(f"Successfully saved: {os.path.abspath(self.output_file)}")
-            print(f"Chapters downloaded: {success_count}/{chapter_count} | Time: {elapsed:.2f}s")
-        except IOError as e:
-            print(f"EPUB save failed: {type(e).__name__} - {str(e)}")
+            while not self.should_stop and (self.max_chapters == 0 or chapter_count < self.max_chapters):
+                chapter_data = self.download_chapter(current_chapter)
+                if not chapter_data:
+                    logger.info(f"Stopping at chapter {current_chapter}")
+                    break
+
+                epub_chapter = self.generate_epub_chapter(chapter_data)
+                book.add_item(epub_chapter)
+                book.toc.append(epub_chapter)
+                book.spine.append(epub_chapter)
+
+                chapter_count += 1
+                current_chapter += 1
+                time.sleep(self.request_delay)
+
+                # Промежуточное сохранение
+                if chapter_count % SAVE_INTERVAL == 0:
+                    self.save_progress(book)
+                    logger.info(f"Downloaded {chapter_count} chapters...")
+        finally:
+            self.save_progress(book)
+            # Финализация EPUB
+            if self.finalize_epub(book):
+                elapsed = time.time() - start_time
+                logger.info(f"Successful saved: {os.path.abspath(self.output_file)}")
+                logger.info(f"Chapters uploaded: {chapter_count} | Time: {elapsed:.2f}с")
+
+                # Удаляем временный файл при успехе
+                if os.path.exists(self.temp_file):
+                    os.remove(self.temp_file)
+            else:
+                logger.info("A temporary file with progress has been saved.:")
+                logger.info(f"  {os.path.abspath(self.temp_file)}")
 
 def main():
     """Точка входа с обработкой аргументов командной строки."""
