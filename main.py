@@ -4,6 +4,7 @@ import mimetypes
 import os
 import random
 import signal
+import sys
 import time
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
@@ -36,7 +37,10 @@ HEADERS = {
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-logger.addHandler(logging.StreamHandler())
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter('%(asctime)s  %(message)s'))
+logger.addHandler(handler)
 
 
 class NovelDownloader:
