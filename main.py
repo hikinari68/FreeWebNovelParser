@@ -18,7 +18,7 @@ BASE_URL = "https://freewebnovel.com"
 SAVE_INTERVAL = 5
 DEFAULT_NOVEL = "shadow-slave"
 DEFAULT_START_CHAPTER = 1
-DEFAULT_MAX_CHAPTERS = 0
+DEFAULT_MAX_CHAPTERS = 2
 DEFAULT_DELAY_SEC = 1
 DEFAULT_OUTPUT = "novel.epub"
 
@@ -296,6 +296,16 @@ class NovelDownloader:
         # Фикс относительных URL изображений
         for img in content.find_all('img', src=True):
             img['src'] = urljoin(BASE_URL, img['src'])
+
+        for element in content.contents[:4]:
+            try:
+                if isinstance(element, Tag) and len(element.contents) > 1:
+                    for inner_element in element.contents:
+                        if inner_element.text.lower().strip().startswith("chapter"):
+                            inner_element.decompose()
+            except Exception as e:
+                print(f"[ERROR] {type(e).__name__} - {str(e)}")
+
 
         return content
 
