@@ -323,10 +323,11 @@ class NovelDownloader:
 
             soup = BeautifulSoup(response.text, 'html.parser')
             content_div = soup.find('div', class_='txt')
+            article_div = soup.find('div', id='article')
 
             if (not content_div
-                or soup.find('div', id='article').text ==
-                "Chapter content is missing or does not exist! Please try again later!"):
+                or (article_div and article_div.text ==
+                    "Chapter content is missing or does not exist! Please try again later!")):
                 logger.info(f"[WARN] No content found in chapter {chapter_num}")
                 return None
 
@@ -446,7 +447,7 @@ class NovelDownloader:
             if self.finalize_epub(book):
                 elapsed = time.time() - start_time
                 logger.info(f"Successful saved: {os.path.abspath(self.output_file)}")
-                logger.info(f"Chapters uploaded: {chapter_count} | Time: {elapsed:.2f}с")
+                logger.info(f"Chapters downloaded: {chapter_count} | Time: {elapsed:.2f}с")
 
                 # Удаляем временный файл при успехе
                 if os.path.exists(self.temp_file):
