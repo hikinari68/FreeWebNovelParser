@@ -7,11 +7,12 @@ import random
 import signal
 import sys
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, TypedDict
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup, Tag
+from bs4.element import NavigableString
 from ebooklib import epub
 
 # Константы
@@ -87,6 +88,17 @@ handler.setFormatter(logging.Formatter("%(asctime)s  %(message)s"))
 logger.addHandler(handler)
 
 
+class BookMetadata(TypedDict, total=False):
+    """Метаданные книги со страницы обзора."""
+
+    title: Optional[str]
+    author: str
+    genres: List[str]
+    status: Optional[str]
+    description: str
+    cover_url: Optional[str]
+
+
 class NovelDownloader:
     """Скачивает новеллу с freewebnovel.com и конвертирует в EPUB."""
 
@@ -115,7 +127,7 @@ class NovelDownloader:
             proxy_url = _normalize_proxy_url(proxy)
             self.session.proxies.update(_proxies_dict(proxy_url))
             logger.info("Using proxy (%s)", proxy_url.split("://", 1)[0])
-        self.metadata = {}
+        self.metadata: BookMetadata = {}
         self.should_stop = False
         self._register_signal_handlers()
 
@@ -159,7 +171,7 @@ class NovelDownloader:
         current_delay = initial_delay
 
         # Используем заголовки сессии по умолчанию
-        request_headers = self.session.headers.copy()
+        request_headers = dict(self.session.headers)
         if headers:
             request_headers.update(headers)
 
@@ -220,7 +232,7 @@ class NovelDownloader:
 
         return None
 
-    def fetch_metadata(self) -> Optional[Dict[str, Union[str, List[str]]]]:
+    def fetch_metadata(self) -> Optional[BookMetadata]:
         """Получает метаданные книги со страницы обзора."""
         url = f"{BASE_URL}/novel/{self.novel_name}"
         try:
@@ -269,7 +281,14 @@ class NovelDownloader:
     def _get_attr(self, soup: BeautifulSoup, selector: str, attr: str) -> Optional[str]:
         """Извлекает атрибут из элемента по CSS-селектору."""
         element = soup.select_one(selector)
-        return element.get(attr) if element else None
+        if not element:
+            return None
+        raw = element.get(attr)
+        if raw is None:
+            return None
+        if isinstance(raw, list):
+            return raw[0] if raw else None
+        return str(raw)
 
     def _create_epub(self) -> epub.EpubBook:
         """Создает базовую структуру EPUB книги."""
@@ -357,14 +376,20 @@ class NovelDownloader:
 
         # Фикс относительных URL изображений
         for img in content.find_all("img", src=True):
-            img["src"] = urljoin(BASE_URL, img["src"])
+            if not isinstance(img, Tag):
+                continue
+            src = img.get("src")
+            if isinstance(src, str):
+                img["src"] = urljoin(BASE_URL, src)
 
         for element in content.contents[:4]:
             try:
                 if isinstance(element, Tag) and len(element.contents) > 1:
                     for inner_element in element.contents:
+                        if not isinstance(inner_element, (Tag, NavigableString)):
+                            continue
                         if inner_element.text.lower().strip().startswith("chapter"):
-                            inner_element.decompose()
+                            inner_element.extract()
             except Exception as e:
                 logger.info(
                     f"[ERROR] Chapter header cleanup: {type(e).__name__} - {str(e)}"
@@ -403,14 +428,18 @@ class NovelDownloader:
                 article is not None and article.get_text(strip=True) == placeholder
             )
 
-            if not content_div or is_placeholder:
+            if (
+                not content_div
+                or is_placeholder
+                or not isinstance(content_div, Tag)
+            ):
                 logger.info(f"[WARN] No content found in chapter {chapter_num}")
                 return None
 
             content = self._process_chapter_content(content_div)
 
             title_tag = soup.find("span", class_="chapter")
-            if title_tag:
+            if isinstance(title_tag, Tag):
                 title = title_tag.text.strip()
                 title_tag.decompose()
             else:
